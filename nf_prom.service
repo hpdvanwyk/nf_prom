@@ -1,0 +1,11 @@
+[Unit]
+Description=Netflow to Prometheus exporter
+After=network-online.target
+
+[Service]
+User=nf_prom
+Restart=on-failure
+ExecStart=/opt/nf_prom/nf_prom -savefile=/var/lib/nf_prom/state.json
+
+[Install]
+WantedBy=multi-user.target
