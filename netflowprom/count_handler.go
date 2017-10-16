@@ -49,8 +49,11 @@ type CountHandler struct {
 	trafficChan chan *IpTraffic
 	counts      map[string]*IpTraffic
 	lastReset   time.Time
-	outGauge    *prometheus.GaugeVec
-	inGauge     *prometheus.GaugeVec
+
+	dns *dnsCache
+
+	outGauge *prometheus.GaugeVec
+	inGauge  *prometheus.GaugeVec
 }
 
 func NewCountHandler(c chan *IpTraffic, saveFile string, doLookups bool) *CountHandler {
@@ -59,6 +62,7 @@ func NewCountHandler(c chan *IpTraffic, saveFile string, doLookups bool) *CountH
 		trafficChan: c,
 		saveFile:    saveFile,
 		doLookups:   doLookups,
+		dns:         newDnsCache(120 * time.Second),
 		outGauge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "netflow_byte_count_out",
 			Help: "Byte in count of a host.",
@@ -166,13 +170,7 @@ func (h *CountHandler) saveState() {
 
 func (h *CountHandler) setHostname(t *IpTraffic) {
 	if h.doLookups {
-		hostnames, err := net.LookupAddr(t.Addr.String())
-		if err == nil {
-			split := strings.Split(hostnames[0], ".")
-			t.Hostname = split[0]
-		} else {
-			t.Hostname = t.Addr.String()
-		}
+		t.Hostname = h.dns.cacheLookup(t.Addr.String())
 	} else {
 		t.Hostname = t.Addr.String()
 	}
@@ -191,4 +189,63 @@ func (h *CountHandler) setGauges(e *IpTraffic) {
 
 func (h *CountHandler) Wait() {
 	h.wg.Wait()
+}
+
+type dnsCacheEntry struct {
+	hostname string
+	updated  time.Time
+}
+
+type dnsCache struct {
+	names   map[string]*dnsCacheEntry
+	timeout time.Duration
+}
+
+func newDnsCache(timeout time.Duration) *dnsCache {
+	return &dnsCache{
+		names:   make(map[string]*dnsCacheEntry),
+		timeout: timeout,
+	}
+}
+
+func (d *dnsCache) cacheLookup(ip string) string {
+	entry, ok := d.names[ip]
+	if !ok {
+		entry = &dnsCacheEntry{
+			hostname: ip,
+		}
+		d.names[ip] = entry
+		fmt.Printf("cache miss %v\n", ip)
+	}
+	now := time.Now()
+	if now.Sub(entry.updated) > d.timeout/2 {
+		// try to refresh
+		h, err := d.dnsLookup(ip)
+		if err != nil {
+			//Keep the old name for now.
+			fmt.Printf("refresh fail %v\n", ip)
+		} else {
+			entry.hostname = h
+			entry.updated = now
+		}
+	}
+	if now.Sub(entry.updated) > d.timeout {
+		// expire entry
+		fmt.Printf("expire %v\n", ip)
+		entry.hostname = ip
+	}
+	return entry.hostname
+}
+
+func (d *dnsCache) dnsLookup(ip string) (string, error) {
+	hostnames, err := net.LookupAddr(ip)
+	if err != nil {
+		// I seem to have some occasional packet loss so try twice.
+		hostnames, err = net.LookupAddr(ip)
+		if err != nil {
+			return "", err
+		}
+	}
+	split := strings.Split(hostnames[0], ".")
+	return split[0], nil
 }
