@@ -32,7 +32,7 @@ package main
 
 import (
 	"flag"
-	"github.com/hpdvanwyk.com/nf_prom/netflowprom"
+	"github.com/hpdvanwyk/nf_prom/netflowprom"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"log"
 	"net/http"
